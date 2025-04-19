@@ -1,72 +1,137 @@
-# Welcome to TanStack.com!
+## Tanstack Start on Workers v0
 
-This site is built with TanStack Router!
+### Step 1: Create project from Tanstack Start quickstart
+You can start a new project using [Tanstack Start's quickstart](https://tanstack.com/start/latest/docs/framework/react/quick-start).
 
-- [TanStack Router Docs](https://tanstack.com/router)
+### Step 2: Update the app.config.ts file with Cloudflare preset
 
-It's deployed automagically with Netlify!
+```ts
+import { defineConfig } from "@tanstack/react-start/config";
+import tsConfigPaths from "vite-tsconfig-paths";
+import { cloudflare } from "unenv";
 
-- [Netlify](https://netlify.com/)
+export default defineConfig({
+  server: {
+    preset: "cloudflare-module",
+    unenv: cloudflare,
+  },
+  tsr: {
+    appDirectory: "src",
+  },
+  vite: {
+    plugins: [
+      tsConfigPaths({
+        projects: ["./tsconfig.json"],
+      }),
+    ],
+  },
+});
+```
+The `cloudflare-module` preset attempts to make the build compatible with Cloudflare's worker runtime. It outputs the build into the `.output` directory.
 
-## Development
+The Cloudflare entrypoint is in the `.output/server/index.mjs` file. All assets are in `.output/public`.
 
-From your terminal:
 
-```sh
-pnpm install
-pnpm dev
+### Step 3: Install and configure nitroCloudflareBindings module in the app.config.ts file
+
+```ts
+import { defineConfig } from "@tanstack/react-start/config";
+import tsConfigPaths from "vite-tsconfig-paths";
+import { cloudflare } from "unenv";
+import nitroCloudflareBindings from "nitro-cloudflare-dev";
+
+export default defineConfig({
+  server: {
+    preset: "cloudflare-module",
+    unenv: cloudflare,
+    modules: [nitroCloudflareBindings],
+  },
+  tsr: {
+    appDirectory: "src",
+  },
+  vite: {
+    plugins: [
+      tsConfigPaths({
+        projects: ["./tsconfig.json"],
+      }),
+    ],
+  },
+});
+```
+This plugin provides your app access to Cloudflare's Worker bindings when running locally. It mirrors the production bindings so you can access the Cloudflare Dev resources locally such as KV, D1, and R2.
+
+If you change your dev script to `wrangler dev`, you can access the bindings in server components from `process.env`. (That said, I found a workaround that allows you to still use vinxi, which will be discussed later.)
+
+### Step 4: Configure your wrangler config in wrangler.jsonc
+```
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tanstack-start-on-workers-v0",
+  "main": ".output/server/index.mjs",
+  "compatibility_date": "2025-04-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".output/public",
+  },
+  "observability": {
+    "enabled": true,
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "5d8a8ea387f348f7a156ffd98384998c",
+    },
+  ],
+  "routes": [
+    {
+      "custom_domain": true,
+      "pattern": "tanstackstart.backpine.com",
+    },
+  ],
+}
 ```
 
-This starts your app in development mode, rebuilding assets on file changes.
+### Step 5: Add wrangler commands to scripts in package.json
+```
+    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+```
+Run `npm run cf-typegen` to generate the types for the Cloudflare bindings.
 
-## Editing and previewing the docs of TanStack projects locally
+### Step 6: Deploy your app to ensure all is working
+Run `npm run deploy` to deploy your app to Cloudflare Workers.
 
-The documentations for all TanStack projects except for `React Charts` are hosted on [https://tanstack.com](https://tanstack.com), powered by this TanStack Router app.
-In production, the markdown doc pages are fetched from the GitHub repos of the projects, but in development they are read from the local file system.
 
-Follow these steps if you want to edit the doc pages of a project (in these steps we'll assume it's [`TanStack/form`](https://github.com/tanstack/form)) and preview them locally :
+### Step 7: Define a helper method to get access to the Cloudflare bindings
+```ts
+/**
+ * Will only work when being accessed on the server. Obviously, CF bindings are not available in the browser.
+ * @returns
+ */
+export function getBindings() {
+  if (import.meta.env.DEV) {
+    const proxyPromise = import("wrangler").then(({ getPlatformProxy }) =>
+      getPlatformProxy().then((proxy) => proxy.env),
+    );
+    return proxyPromise as unknown as CloudflareBindings;
+  }
 
-1. Create a new directory called `tanstack`.
-
-```sh
-mkdir tanstack
+  return process.env as unknown as CloudflareBindings;
+}
 ```
 
-2. Enter the directory and clone this repo and the repo of the project there.
+For CF apps built with Nitro, the CloudflareBindings can be accessed from process.env. There are a few other ways of accessing the bindings, but I ran across some issues with SSR when using getEvent().context.cloudflare.env.
 
-```sh
-cd tanstack
-git clone git@github.com:TanStack/tanstack.com.git
-git clone git@github.com:TanStack/form.git
+I'm aware that this is not the most elegant solution, but it works for now.
+
+To get your bindings to work locally with vinxi, you can access the bindings using the getPlatformProxy method from wrangler. This logic is placed under a check if import.meta.env.DEV is true.
+
+### Step 8: Use the getBindings method to access the Cloudflare bindings in server side logic
+```ts
+const bindings = getBindings();
+const cache = bindings.CACHE;
+const queryCount = (await cache.get("queryCount")) || "0";
+await cache.put("queryCount", String(Number(queryCount) + 1));
 ```
 
-> [!NOTE]
-> Your `tanstack` directory should look like this:
->
-> ```
-> tanstack/
->    |
->    +-- form/
->    |
->    +-- tanstack.com/
-> ```
-
-> [!WARNING]
-> Make sure the name of the directory in your local file system matches the name of the project's repo. For example, `tanstack/form` must be cloned into `form` (this is the default) instead of `some-other-name`, because that way, the doc pages won't be found.
-
-3. Enter the `tanstack/tanstack.com` directory, install the dependencies and run the app in dev mode:
-
-```sh
-cd tanstack.com
-pnpm i
-# The app will run on https://localhost:3000 by default
-pnpm dev
-```
-
-4. Now you can visit http://localhost:3000/form/latest/docs/overview in the browser and see the changes you make in `tanstack/form/docs`.
-
-> [!NOTE]
-> The updated pages need to be manually reloaded in the browser.
-
-> [!WARNING]
-> You will need to update the `docs/config.json` file (in the project's repo) if you add a new doc page!
+This should work both locally and on Cloudflare Workers.
